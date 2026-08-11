@@ -6,7 +6,7 @@
   autoPatchelfHook,
   makeWrapper,
   coreutils,
-  tar,
+  gnutar,
   xdg-utils,
   xz,
   alsa-lib,
@@ -116,7 +116,7 @@ stdenv.mkDerivation (finalAttrs: {
     wrapProgram "$out/lib/chatgpt/codex-launcher" \
       --prefix PATH : ${lib.makeBinPath [
         coreutils
-        tar
+        gnutar
         xdg-utils
         xz
       ]}
