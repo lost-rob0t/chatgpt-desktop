@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -45,8 +47,6 @@ jobs:
             cat ./usr/share/applications/chatgpt.desktop
             echo '--- MAIN ELF NEEDED ---'
             readelf -d ./usr/lib/chatgpt/ChatGPT | grep NEEDED || true
-            echo '--- CODEX LAUNCHER ELF NEEDED ---'
-            readelf -d ./usr/lib/chatgpt/codex-launcher | grep NEEDED || true
             echo '--- RPM FILES ---'
             rpm -qlp "$rpm_path" | sort
           } | tee "$info"
@@ -60,3 +60,39 @@ jobs:
             inspect/usr/bin/chatgpt
             inspect/usr/share/applications/chatgpt.desktop
             inspect/etc/apparmor.d/chatgpt
+
+  nix-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Lock flake
+        run: nix flake lock
+
+      - name: Check flake
+        run: nix flake check --show-trace
+
+      - name: Build package
+        run: nix build .#chatgpt-desktop --print-build-logs
+
+      - name: Validate package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -L result/bin/chatgpt
+          test -x result/lib/chatgpt/ChatGPT
+          test -f result/share/applications/chatgpt.desktop
+          ldd result/lib/chatgpt/ChatGPT | tee /tmp/chatgpt-ldd.txt
+          ! grep -q 'not found' /tmp/chatgpt-ldd.txt
+          grep -F "Exec=$(readlink -f result)/bin/chatgpt %U" \
+            result/share/applications/chatgpt.desktop
+
+      - name: Upload lock file
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-lock
+          path: flake.lock
