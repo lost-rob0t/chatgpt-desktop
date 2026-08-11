@@ -21,6 +21,7 @@
   libdrm,
   libGL,
   libnotify,
+  libpulseaudio,
   libsecret,
   libusb1,
   libx11,
@@ -67,6 +68,7 @@ stdenv.mkDerivation (finalAttrs: {
     libdrm
     libGL
     libnotify
+    libpulseaudio
     libsecret
     libusb1
     libx11
@@ -113,13 +115,18 @@ stdenv.mkDerivation (finalAttrs: {
   autoPatchelfIgnoreMissingDeps = [ "*" ];
 
   postFixup = ''
+    # Chromium/Electron loads libpulse.so.0 with dlopen instead of declaring it
+    # in DT_NEEDED. autoPatchelf therefore cannot discover it automatically.
+    # Expose the PulseAudio client library explicitly so microphone/Voice input
+    # can connect to either PulseAudio or a PipeWire-Pulse compatibility server.
     wrapProgram "$out/lib/chatgpt/codex-launcher" \
       --prefix PATH : ${lib.makeBinPath [
         coreutils
         gnutar
         xdg-utils
         xz
-      ]}
+      ]} \
+      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libpulseaudio ]}
   '';
 
   meta = {
