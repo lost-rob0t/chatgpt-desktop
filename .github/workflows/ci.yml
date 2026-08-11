@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  upstream-rpm:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - name: Install inspection tools
+        run: dnf install -y curl rpm cpio findutils coreutils
+
+      - name: Inspect official ChatGPT RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rpm_path=/tmp/chatgpt.x86_64.rpm
+          curl --fail --location --retry 3 \
+            --output "$rpm_path" \
+            https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm
+
+          printf 'PACKAGE_SHA256=%s\n' "$(sha256sum "$rpm_path" | awk '{print $1}')"
+          rpm -qp --queryformat $'PACKAGE_NAME=%{NAME}\nPACKAGE_VERSION=%{VERSION}\nPACKAGE_RELEASE=%{RELEASE}\nPACKAGE_ARCH=%{ARCH}\n' "$rpm_path"
+
+          echo '--- RPM REQUIRES ---'
+          rpm -qpR "$rpm_path" | sort
+          echo '--- RPM FILES ---'
+          rpm -qlp "$rpm_path" | sort
