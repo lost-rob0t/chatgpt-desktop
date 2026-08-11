@@ -10,24 +10,43 @@ jobs:
     container: fedora:44
     steps:
       - name: Install inspection tools
-        run: dnf install -y curl rpm cpio findutils coreutils file
+        run: dnf install -y curl rpm cpio findutils coreutils file binutils
 
       - name: Inspect official ChatGPT RPM
         shell: bash
         run: |
           set -euo pipefail
           rpm_path=/tmp/chatgpt.x86_64.rpm
+          inspect="$GITHUB_WORKSPACE/inspect"
           info="$GITHUB_WORKSPACE/rpm-info.txt"
+          mkdir -p "$inspect"
 
           curl --fail --location --retry 3 \
             --output "$rpm_path" \
             https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm
 
+          cd "$inspect"
+          rpm2cpio "$rpm_path" | cpio -idm --quiet \
+            './usr/bin/chatgpt' \
+            './usr/lib/chatgpt/ChatGPT' \
+            './usr/lib/chatgpt/codex-launcher' \
+            './usr/share/applications/chatgpt.desktop' \
+            './etc/apparmor.d/chatgpt'
+
           {
             printf 'PACKAGE_SHA256=%s\n' "$(sha256sum "$rpm_path" | awk '{print $1}')"
-            rpm -qp --queryformat $'PACKAGE_NAME=%{NAME}\nPACKAGE_VERSION=%{VERSION}\nPACKAGE_RELEASE=%{RELEASE}\nPACKAGE_ARCH=%{ARCH}\n' "$rpm_path"
+            rpm -qp --queryformat $'PACKAGE_NAME=%{NAME}\nPACKAGE_VERSION=%{VERSION}\nPACKAGE_RELEASE=%{RELEASE}\nPACKAGE_ARCH=%{ARCH}\nPACKAGE_LICENSE=%{LICENSE}\nPACKAGE_URL=%{URL}\nPACKAGE_SUMMARY=%{SUMMARY}\n' "$rpm_path"
             echo '--- RPM REQUIRES ---'
             rpm -qpR "$rpm_path" | sort
+            echo '--- LAUNCHER ---'
+            ls -l ./usr/bin/chatgpt
+            file ./usr/bin/chatgpt ./usr/lib/chatgpt/ChatGPT ./usr/lib/chatgpt/codex-launcher
+            echo '--- DESKTOP FILE ---'
+            cat ./usr/share/applications/chatgpt.desktop
+            echo '--- MAIN ELF NEEDED ---'
+            readelf -d ./usr/lib/chatgpt/ChatGPT | grep NEEDED || true
+            echo '--- CODEX LAUNCHER ELF NEEDED ---'
+            readelf -d ./usr/lib/chatgpt/codex-launcher | grep NEEDED || true
             echo '--- RPM FILES ---'
             rpm -qlp "$rpm_path" | sort
           } | tee "$info"
@@ -36,4 +55,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rpm-info
-          path: rpm-info.txt
+          path: |
+            rpm-info.txt
+            inspect/usr/bin/chatgpt
+            inspect/usr/share/applications/chatgpt.desktop
+            inspect/etc/apparmor.d/chatgpt
