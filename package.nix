@@ -46,7 +46,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   src = fetchurl {
     url = "https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm";
-    sha256 = "ea195532e23491a0a2cd57561d993dfc3c9b265f4ad113af3abdae019b5c969e";
+    sha256 = "sha256-wIu7eMc0QNDU+v0X214lPaLEaU3DPpr3hCTcu6t3rk4=";
   };
 
   nativeBuildInputs = [
