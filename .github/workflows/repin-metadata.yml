@@ -11,7 +11,7 @@ permissions:
 jobs:
   metadata:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -19,6 +19,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          nix flake metadata --refresh --json github:lost-rob0t/chatgpt-desktop/7de6939bcf5d8cc0d926d6408d3a159cf2493e62 | tee /tmp/chatgpt-metadata.json
+          nix flake metadata --refresh --json github:lost-rob0t/chatgpt-desktop/231ce8a9c782623ece8e2a10bb5baf63736dc588 | tee /tmp/chatgpt-metadata.json
           echo '--- VERIFIED LOCKED INPUT ---'
           jq '.locked' /tmp/chatgpt-metadata.json
+      - name: Build with dotfiles nixpkgs
+        env:
+          NIXPKGS_ALLOW_UNFREE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix build --impure --no-link --print-build-logs github:lost-rob0t/chatgpt-desktop/231ce8a9c782623ece8e2a10bb5baf63736dc588#default --override-input nixpkgs github:NixOS/nixpkgs/20b1ddd1aa5ace70c9468305030aa4f9ef79671b
