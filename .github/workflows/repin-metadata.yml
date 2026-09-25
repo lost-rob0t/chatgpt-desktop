@@ -1,0 +1,24 @@
+name: Verify ChatGPT repin
+
+on:
+  push:
+    branches: [verify/chatgpt-26.924.60418-repin]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+      - name: Calculate immutable package pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix flake metadata --refresh --json github:lost-rob0t/chatgpt-desktop/fa8dd9ed6647483070680594a9825f3d1498ae72 | tee /tmp/chatgpt-metadata.json
+          echo '--- VERIFIED LOCKED INPUT ---'
+          jq '.locked' /tmp/chatgpt-metadata.json
