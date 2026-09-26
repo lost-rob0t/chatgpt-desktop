@@ -11,53 +11,91 @@ permissions:
 jobs:
   metadata:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Install RPM inspection tools
-        run: sudo apt-get update -qq && sudo apt-get install -y rpm cpio
-      - name: Inspect one upstream download and repository metadata
+      - uses: actions/checkout@v4
+        with:
+          ref: 231ce8a9c782623ece8e2a10bb5baf63736dc588
+      - uses: cachix/install-nix-action@v31
+      - name: Resolve versioned RPM from upstream repository
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/chatgpt-inspect
-          cd /tmp/chatgpt-inspect
-          curl --fail --location --retry 3 --max-time 180 --dump-header headers.txt \
-            --output chatgpt.rpm \
-            https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm
-          cat headers.txt
-          sha256sum chatgpt.rpm
-          rpm -qp --queryformat 'NAME=%{NAME}\nVERSION=%{VERSION}\nRELEASE=%{RELEASE}\nARCH=%{ARCH}\n' chatgpt.rpm
-          rpm2cpio chatgpt.rpm | cpio -idm --quiet \
-            './etc/yum.repos.d/chatgpt.repo' \
-            './usr/lib/chatgpt/resources/linux-package-metadata.json' \
-            './usr/lib/chatgpt/resources/owl-app.ini' \
-            './usr/lib/chatgpt/version'
-          find etc -type f -print -exec cat {} \;
-          find usr -type f -print -exec cat {} \;
-          baseurl=$(sed -n 's/^baseurl=//p' etc/yum.repos.d/chatgpt.repo)
-          baseurl=${baseurl//\$basearch/x86_64}
-          baseurl=${baseurl//\$releasever/44}
-          printf '\nREPOSITORY_BASE_URL=%s\n' "$baseurl"
-          curl --fail --location --retry 2 --max-time 30 "$baseurl/repodata/repomd.xml" -o repomd.xml
-          cat repomd.xml
-          python3 - "$baseurl" <<'PY'
-          import gzip
-          import sys
-          import urllib.request
+          base=https://persistent.oaistatic.com/codex-app-prod/linux/rpm/x86_64
+          curl -fsSL --retry 2 --max-time 30 "$base/repodata/repomd.xml" -o /tmp/repomd.xml
+          python3 - <<'PY'
+          import json
           import xml.etree.ElementTree as ET
-          base = sys.argv[1].rstrip('/') + '/'
-          root = ET.parse('repomd.xml').getroot()
           ns = {'r': 'http://linux.duke.edu/metadata/repo'}
-          item = root.find("r:data[@type='primary']/r:location", ns)
-          assert item is not None, 'Missing primary metadata'
-          url = urllib.parse.urljoin(base, item.attrib['href'])
-          with urllib.request.urlopen(url, timeout=30) as response:
-              data = response.read(16 * 1024 * 1024)
-          if data.startswith(b'\x1f\x8b'):
-              data = gzip.decompress(data)
-          ns = {'p': 'http://linux.duke.edu/metadata/common'}
-          for pkg in ET.fromstring(data).findall('p:package', ns):
-              if pkg.findtext('p:name', namespaces=ns) != 'chatgpt':
-                  continue
-              print('UPSTREAM_PACKAGE', ET.tostring(pkg, encoding='unicode'))
+          entry = ET.parse('/tmp/repomd.xml').find("r:data[@type='primary']", ns)
+          checksum = entry.find('r:checksum', ns)
+          assert checksum.attrib['type'] == 'sha256'
+          href = entry.find('r:location', ns).attrib['href']
+          assert href.startswith('repodata/') and '..' not in href
+          open('/tmp/primary-path', 'w').write(href)
+          open('/tmp/primary-sha', 'w').write(checksum.text)
           PY
+          curl -fsSL --retry 2 --max-time 30 "$base/$(cat /tmp/primary-path)" -o /tmp/primary.gz
+          echo "$(cat /tmp/primary-sha)  /tmp/primary.gz" | sha256sum -c -
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import json
+          import re
+          import urllib.parse
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          ns = {'p': 'http://linux.duke.edu/metadata/common'}
+          root = ET.fromstring(gzip.decompress(Path('/tmp/primary.gz').read_bytes()))
+          entries = [p for p in root.findall('p:package', ns)
+                     if p.findtext('p:name', namespaces=ns) == 'chatgpt'
+                     and p.findtext('p:arch', namespaces=ns) == 'x86_64']
+          assert entries, 'No upstream x86_64 ChatGPT package'
+          pkg = max(entries, key=lambda p: tuple(map(int, p.find('p:version', ns).attrib['ver'].split('.'))))
+          version = pkg.find('p:version', ns).attrib['ver']
+          checksum = pkg.find('p:checksum', ns)
+          assert checksum.attrib['type'] == 'sha256'
+          url = urllib.parse.urljoin('https://persistent.oaistatic.com/codex-app-prod/linux/rpm/x86_64/', pkg.find('p:location', ns).attrib['href'])
+          assert url.startswith('https://persistent.oaistatic.com/')
+          assert '/latest/' not in url and version in url, url
+          sri = 'sha256-' + base64.b64encode(bytes.fromhex(checksum.text)).decode()
+          pin = {'version': version, 'url': url, 'sha256': sri, 'hex': checksum.text}
+          Path('/tmp/pin.json').write_text(json.dumps(pin, indent=2) + '\n')
+          print('VERIFIED_REPOSITORY_PIN=' + json.dumps(pin))
+          path = Path('package.nix')
+          text = path.read_text()
+          for key, value in [('version', version), ('url', url), ('sha256', sri)]:
+              text, count = re.subn(r'(?m)^(\s*' + key + r'\s*=\s*)"[^"]+";', lambda m: m[1] + json.dumps(value) + ';', text)
+              assert count == 1, (key, count)
+          path.write_text(text)
+          PY
+          git diff --check
+          git diff -- package.nix
+      - name: Verify RPM identity and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 2 --max-time 180 "$(jq -r .url /tmp/pin.json)" -o /tmp/chatgpt.rpm
+          echo "$(jq -r .hex /tmp/pin.json)  /tmp/chatgpt.rpm" | sha256sum -c -
+          test "$(rpm -qp --queryformat '%{VERSION}' /tmp/chatgpt.rpm)" = "$(jq -r .version /tmp/pin.json)"
+          test "$(rpm -qp --queryformat '%{NAME} %{ARCH}' /tmp/chatgpt.rpm)" = 'chatgpt x86_64'
+      - name: Build package with its own lock
+        run: nix build .#chatgpt-desktop --no-write-lock-file --print-build-logs
+      - name: Validate installed package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -L result/bin/chatgpt
+          test -x result/lib/chatgpt/ChatGPT
+          test -f result/share/applications/chatgpt.desktop
+          test "$(jq -r .version result/lib/chatgpt/resources/linux-package-metadata.json)" = "$(jq -r .version /tmp/pin.json)"
+          ldd result/lib/chatgpt/ChatGPT | tee /tmp/chatgpt-ldd.txt
+          ! grep -q 'not found' /tmp/chatgpt-ldd.txt
+          grep -F "Exec=$(readlink -f result)/bin/chatgpt %U" result/share/applications/chatgpt.desktop
+      - name: Build with dotfiles nixpkgs
+        run: nix build .#chatgpt-desktop --no-write-lock-file --no-link --print-build-logs --override-input nixpkgs github:NixOS/nixpkgs/20b1ddd1aa5ace70c9468305030aa4f9ef79671b
+      - name: Record verified candidate
+        run: |
+          cat /tmp/pin.json
+          sha256sum package.nix
+          cat package.nix
