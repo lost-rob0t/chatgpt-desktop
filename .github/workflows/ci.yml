@@ -6,15 +6,22 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   upstream-rpm:
     runs-on: ubuntu-latest
     container: fedora:44
+    timeout-minutes: 10
     steps:
       - name: Install inspection tools
-        run: dnf install -y curl rpm cpio findutils coreutils file binutils
+        run: dnf install -y curl rpm cpio findutils coreutils file binutils python3 git
 
-      - name: Inspect official ChatGPT RPM
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Inspect pinned ChatGPT RPM
         shell: bash
         run: |
           set -euo pipefail
@@ -23,9 +30,33 @@ jobs:
           info="$GITHUB_WORKSPACE/rpm-info.txt"
           mkdir -p "$inspect"
 
-          curl --fail --location --retry 3 \
-            --output "$rpm_path" \
-            https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm
+          python3 - <<'PY'
+          import base64
+          import re
+          from pathlib import Path
+
+          text = Path('package.nix').read_text()
+          fields = {}
+          for key in ('version', 'url', 'sha256'):
+              matches = re.findall(r'^\s*' + key + r'\s*=\s*"([^"]+)";', text, re.MULTILINE)
+              assert len(matches) == 1, (key, matches)
+              fields[key] = matches[0]
+          assert fields['url'].startswith('https://persistent.oaistatic.com/')
+          assert '/latest/' not in fields['url'], 'Use a versioned upstream artifact'
+          assert fields['version'] in fields['url']
+          assert fields['sha256'].startswith('sha256-')
+          digest = base64.b64decode(fields['sha256'][7:], validate=True)
+          assert len(digest) == 32
+          Path('/tmp/rpm-url').write_text(fields['url'])
+          Path('/tmp/rpm-version').write_text(fields['version'])
+          Path('/tmp/rpm-checksum').write_text(digest.hex() + '  /tmp/chatgpt.x86_64.rpm\n')
+          PY
+
+          curl --fail --location --retry 3 --max-time 180 \
+            --output "$rpm_path" "$(cat /tmp/rpm-url)"
+          sha256sum --check /tmp/rpm-checksum
+          test "$(rpm -qp --queryformat '%{VERSION}' "$rpm_path")" = "$(cat /tmp/rpm-version)"
+          test "$(rpm -qp --queryformat '%{NAME} %{ARCH}' "$rpm_path")" = 'chatgpt x86_64'
 
           cd "$inspect"
           rpm2cpio "$rpm_path" | cpio -idm --quiet \
@@ -37,7 +68,7 @@ jobs:
 
           {
             printf 'PACKAGE_SHA256=%s\n' "$(sha256sum "$rpm_path" | awk '{print $1}')"
-            rpm -qp --queryformat $'PACKAGE_NAME=%{NAME}\nPACKAGE_VERSION=%{VERSION}\nPACKAGE_RELEASE=%{RELEASE}\nPACKAGE_ARCH=%{ARCH}\nPACKAGE_LICENSE=%{LICENSE}\nPACKAGE_URL=%{URL}\nPACKAGE_SUMMARY=%{SUMMARY}\n' "$rpm_path"
+            rpm -qp --queryformat $'PACKAGE_NAME=%{NAME}\nPACKAGE_VERSION=%{VERSION}\nPACKAGE_RELEASE=%{RELEASE}\nPACKAGE_ARCH=%{ARCH}\n' "$rpm_path"
             echo '--- RPM REQUIRES ---'
             rpm -qpR "$rpm_path" | sort
             echo '--- LAUNCHER ---'
@@ -46,9 +77,7 @@ jobs:
             echo '--- DESKTOP FILE ---'
             cat ./usr/share/applications/chatgpt.desktop
             echo '--- MAIN ELF NEEDED ---'
-            readelf -d ./usr/lib/chatgpt/ChatGPT | grep NEEDED || true
-            echo '--- RPM FILES ---'
-            rpm -qlp "$rpm_path" | sort
+            readelf -d ./usr/lib/chatgpt/ChatGPT | grep NEEDED
           } | tee "$info"
 
       - name: Upload RPM metadata
@@ -63,6 +92,7 @@ jobs:
 
   nix-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,14 +100,11 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
 
-      - name: Lock flake
-        run: nix flake lock
-
       - name: Check flake
-        run: nix flake check --show-trace
+        run: nix flake check --no-write-lock-file --show-trace
 
       - name: Build package
-        run: nix build .#chatgpt-desktop --print-build-logs
+        run: nix build .#chatgpt-desktop --no-write-lock-file --print-build-logs
 
       - name: Validate package
         shell: bash
@@ -86,13 +113,27 @@ jobs:
           test -L result/bin/chatgpt
           test -x result/lib/chatgpt/ChatGPT
           test -f result/share/applications/chatgpt.desktop
+          expected_version=$(nix eval --raw .#chatgpt-desktop.version)
+          actual_version=$(jq -r .version result/lib/chatgpt/resources/linux-package-metadata.json)
+          test "$actual_version" = "$expected_version"
           ldd result/lib/chatgpt/ChatGPT | tee /tmp/chatgpt-ldd.txt
           ! grep -q 'not found' /tmp/chatgpt-ldd.txt
           grep -F "Exec=$(readlink -f result)/bin/chatgpt %U" \
             result/share/applications/chatgpt.desktop
 
+      - name: Record immutable flake pin
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix flake metadata --refresh --json "github:${GITHUB_REPOSITORY}/${GITHUB_SHA}" > flake-metadata.json
+          echo '--- VERIFIED LOCKED INPUT ---'
+          jq '.locked' flake-metadata.json
+
       - name: Upload lock file
         uses: actions/upload-artifact@v4
         with:
           name: flake-lock
-          path: flake.lock
+          path: |
+            flake.lock
+            flake-metadata.json

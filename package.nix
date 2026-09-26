@@ -42,11 +42,11 @@
 
 stdenv.mkDerivation (finalAttrs: {
   pname = "chatgpt-desktop";
-  version = "26.924.60418";
+  version = "26.924.20706";
 
   src = fetchurl {
-    url = "https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm";
-    sha256 = "sha256-PgK3sQFMUoyUZinPpL/XaZG+VLBMpjUCpQvbEK26IQk=";
+    url = "https://persistent.oaistatic.com/codex-app-prod/linux/rpm/x86_64/chatgpt-26.924.20706-1.x86_64.rpm";
+    sha256 = "sha256-t1cowjzy16Tjt8zM0hlzkaTNRbiI3+Rco2FtfBl3Pj0=";
   };
 
   nativeBuildInputs = [
