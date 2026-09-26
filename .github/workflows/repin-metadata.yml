@@ -11,21 +11,53 @@ permissions:
 jobs:
   metadata:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-      - name: Calculate immutable package pin
+      - name: Install RPM inspection tools
+        run: sudo apt-get update -qq && sudo apt-get install -y rpm cpio
+      - name: Inspect one upstream download and repository metadata
         shell: bash
         run: |
           set -euo pipefail
-          nix flake metadata --refresh --json github:lost-rob0t/chatgpt-desktop/231ce8a9c782623ece8e2a10bb5baf63736dc588 | tee /tmp/chatgpt-metadata.json
-          echo '--- VERIFIED LOCKED INPUT ---'
-          jq '.locked' /tmp/chatgpt-metadata.json
-      - name: Build with dotfiles nixpkgs
-        env:
-          NIXPKGS_ALLOW_UNFREE: '1'
-        shell: bash
-        run: |
-          set -euo pipefail
-          nix build --impure --no-link --print-build-logs github:lost-rob0t/chatgpt-desktop/231ce8a9c782623ece8e2a10bb5baf63736dc588#default --override-input nixpkgs github:NixOS/nixpkgs/20b1ddd1aa5ace70c9468305030aa4f9ef79671b
+          mkdir -p /tmp/chatgpt-inspect
+          cd /tmp/chatgpt-inspect
+          curl --fail --location --retry 3 --max-time 180 --dump-header headers.txt \
+            --output chatgpt.rpm \
+            https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm
+          cat headers.txt
+          sha256sum chatgpt.rpm
+          rpm -qp --queryformat 'NAME=%{NAME}\nVERSION=%{VERSION}\nRELEASE=%{RELEASE}\nARCH=%{ARCH}\n' chatgpt.rpm
+          rpm2cpio chatgpt.rpm | cpio -idm --quiet \
+            './etc/yum.repos.d/chatgpt.repo' \
+            './usr/lib/chatgpt/resources/linux-package-metadata.json' \
+            './usr/lib/chatgpt/resources/owl-app.ini' \
+            './usr/lib/chatgpt/version'
+          find etc -type f -print -exec cat {} \;
+          find usr -type f -print -exec cat {} \;
+          baseurl=$(sed -n 's/^baseurl=//p' etc/yum.repos.d/chatgpt.repo)
+          baseurl=${baseurl//\$basearch/x86_64}
+          baseurl=${baseurl//\$releasever/44}
+          printf '\nREPOSITORY_BASE_URL=%s\n' "$baseurl"
+          curl --fail --location --retry 2 --max-time 30 "$baseurl/repodata/repomd.xml" -o repomd.xml
+          cat repomd.xml
+          python3 - "$baseurl" <<'PY'
+          import gzip
+          import sys
+          import urllib.request
+          import xml.etree.ElementTree as ET
+          base = sys.argv[1].rstrip('/') + '/'
+          root = ET.parse('repomd.xml').getroot()
+          ns = {'r': 'http://linux.duke.edu/metadata/repo'}
+          item = root.find("r:data[@type='primary']/r:location", ns)
+          assert item is not None, 'Missing primary metadata'
+          url = urllib.parse.urljoin(base, item.attrib['href'])
+          with urllib.request.urlopen(url, timeout=30) as response:
+              data = response.read(16 * 1024 * 1024)
+          if data.startswith(b'\x1f\x8b'):
+              data = gzip.decompress(data)
+          ns = {'p': 'http://linux.duke.edu/metadata/common'}
+          for pkg in ET.fromstring(data).findall('p:package', ns):
+              if pkg.findtext('p:name', namespaces=ns) != 'chatgpt':
+                  continue
+              print('UPSTREAM_PACKAGE', ET.tostring(pkg, encoding='unicode'))
+          PY
