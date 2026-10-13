@@ -38,6 +38,7 @@
   openssl,
   pango,
   udev,
+  tpm2-tss,
 }:
 
 stdenv.mkDerivation (finalAttrs: {
@@ -86,6 +87,7 @@ stdenv.mkDerivation (finalAttrs: {
     pango
     (lib.getLib stdenv.cc.cc)
     udev
+    tpm2-tss
   ];
 
   unpackPhase = ''
@@ -110,9 +112,17 @@ stdenv.mkDerivation (finalAttrs: {
     runHook postInstall
   '';
 
-  # The bundle ships optional compatibility shims; do not fail the build when
-  # one of those optional shared-library targets is absent from nixpkgs.
-  autoPatchelfIgnoreMissingDeps = [ "*" ];
+  # Optional Qt theme shims and musl prebuilds are not used by this GTK/glibc
+  # package. All other missing dependencies must fail the build.
+  autoPatchelfIgnoreMissingDeps = [
+    "libQt5Core.so.5"
+    "libQt5Gui.so.5"
+    "libQt5Widgets.so.5"
+    "libQt6Core.so.6"
+    "libQt6Gui.so.6"
+    "libQt6Widgets.so.6"
+    "libc.musl-x86_64.so.1"
+  ];
 
   postFixup = ''
     # Chromium/Electron loads libpulse.so.0 with dlopen instead of declaring it

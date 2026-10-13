@@ -80,6 +80,17 @@ jobs:
             readelf -d ./usr/lib/chatgpt/ChatGPT | grep NEEDED
           } | tee "$info"
 
+      - name: Report current upstream RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest=/tmp/chatgpt-latest.x86_64.rpm
+          curl --fail --location --retry 3 --max-time 180 \
+            --output "$latest" https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm
+          test "$(rpm -qp --queryformat '%{NAME} %{ARCH}' "$latest")" = 'chatgpt x86_64'
+          rpm -qp --queryformat 'UPSTREAM_VERSION=%{VERSION}\nUPSTREAM_RELEASE=%{RELEASE}\n' "$latest"
+          sha256sum "$latest"
+
       - name: Upload RPM metadata
         uses: actions/upload-artifact@v4
         with:
@@ -116,8 +127,7 @@ jobs:
           expected_version=$(nix eval --raw .#chatgpt-desktop.version)
           actual_version=$(jq -r .version result/lib/chatgpt/resources/linux-package-metadata.json)
           test "$actual_version" = "$expected_version"
-          ldd result/lib/chatgpt/ChatGPT | tee /tmp/chatgpt-ldd.txt
-          ! grep -q 'not found' /tmp/chatgpt-ldd.txt
+          # flake check validates ELF linkage with the package's Nix loader.
           grep -F "Exec=$(readlink -f result)/bin/chatgpt %U" \
             result/share/applications/chatgpt.desktop
 
