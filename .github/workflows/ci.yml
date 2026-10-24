@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Install inspection tools
-        run: dnf install -y curl rpm cpio findutils coreutils file binutils python3 git
+        run: dnf install -y curl rpm cpio findutils coreutils file binutils python3 git nodejs
 
       - name: Checkout
         uses: actions/checkout@v4
